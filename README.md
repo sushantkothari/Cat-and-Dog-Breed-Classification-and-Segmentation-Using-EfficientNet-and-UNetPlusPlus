@@ -1,285 +1,242 @@
-# Cat and Dog Breed Classification and Segmentation Using EfficientNet and UNet++
+# Cat & Dog Breed Classification and Segmentation Using EfficientNet and UNet++
 
 ## Overview
 
-Cat and Dog Breed Classification and Segmentation Using EfficientNet and UNet++ is a deep learning-based computer vision project designed to classify cat and dog breeds and generate pixel-level segmentation masks from pet images. The system combines transfer learning with **EfficientNet-B0** for classification and **UNet++ with an EfficientNet-B2 encoder** for segmentation to improve prediction quality, preserve fine visual details, and deliver a practical end-to-end inference workflow.
+This project is a dual-task computer vision system that performs **fine-grained pet breed classification** and **semantic segmentation** on images from the Oxford-IIIT Pet Dataset. It combines the representational power of EfficientNet-B0 for 37-class breed classification with a UNet++ segmentation model backed by an EfficientNet-B2 encoder to produce pixel-accurate pet masks — all wrapped in an interactive Gradio interface.
 
-The project is built for research, academic presentation, and portfolio demonstration. It includes model training, validation, visual evaluation, checkpoint saving, and an interactive **Gradio** interface for real-time inference.
+The pipeline covers the full machine learning lifecycle: dataset preparation, augmentation, transfer learning, backbone fine-tuning, evaluation, and a live inference demo with segmentation overlays and confidence heatmaps.
 
 ---
 
 ## Key Highlights
 
-- End-to-end pet breed classification and segmentation pipeline
-- Transfer learning with **EfficientNet-B0** for breed classification
-- Fine-tuning phase for improved performance
-- **UNet++** with **EfficientNet-B2** encoder for binary pet segmentation
-- Advanced image augmentation for better generalization
-- Mixed precision training for efficient GPU usage
-- Early stopping and best checkpoint saving
-- Comprehensive evaluation using accuracy, precision, recall, F1-score, IoU, and Dice score
-- Confusion matrix and per-class accuracy analysis
-- Gradio-based interactive inference interface
-- Result preview included in `Results.png`
+- 37-class fine-grained breed classification (cats and dogs)
+- EfficientNet-B0 with custom classification head using BatchNorm + Dropout
+- Two-stage training: frozen backbone transfer learning followed by full fine-tuning
+- UNet++ segmentation with EfficientNet-B2 encoder and SCSE decoder attention
+- Combined Tversky + Focal loss for boundary-aware segmentation
+- Mixed precision training with AMP for faster GPU utilization
+- Cosine annealing LR scheduler with linear warmup for segmentation
+- Early stopping and best model checkpointing for both tasks
+- Per-class accuracy analysis and confusion matrix visualization
+- Gradio app with breed predictions, segmentation overlays, and confidence heatmaps
 
 ---
 
-## Project Architecture
+## Results
 
-### Training Workflow
+![Results](Results.png)
 
-The project follows a structured machine learning lifecycle:
+---
 
-1. Environment check
-2. Google Drive mounting
-3. Dataset extraction from compressed archives
-4. Breed label extraction from image filenames
-5. Train/validation split for classification
-6. Classification dataset and dataloader creation
-7. EfficientNet-B0 initialization
-8. Frozen-backbone classification training
-9. Fine-tuning of the full classifier
-10. Final classification evaluation
-11. Segmentation dataset preparation
-12. Trimap-to-binary mask conversion
-13. UNet++ initialization with EfficientNet-B2 encoder
-14. Segmentation training with combined loss
-15. Segmentation validation and checkpoint saving
-16. Prediction visualization
-17. Gradio app construction for inference
+## System Architecture
 
-Generated model artifacts:
+### Classification Pipeline
 
-- `best_model.pth` — Best classification checkpoint
-- `best_seg_model.pth` — Best segmentation checkpoint
+```
+Input Image
+    ↓
+Augmentation (RandomCrop, Flip, Rotation, ColorJitter)
+    ↓
+EfficientNet-B0 Backbone (Pretrained on ImageNet)
+    ↓
+Custom Head: BatchNorm1d → Dropout(0.5) → Linear(37 classes)
+    ↓
+CrossEntropyLoss (label_smoothing=0.1)
+    ↓
+AdamW + CosineAnnealingLR
+    ↓
+Phase 1: Frozen Backbone → Phase 2: Full Fine-Tuning
+    ↓
+Breed Prediction + Top-5 Confidence Scores
+```
 
-This structure cleanly separates classification, segmentation, and inference stages.
+### Segmentation Pipeline
+
+```
+Input Image
+    ↓
+Augmentation (Flip, Affine, ColorJitter, GridDistortion)
+    ↓
+UNet++ Encoder: EfficientNet-B2 (ImageNet Weights)
+    ↓
+Decoder with SCSE Attention Blocks
+    ↓
+Combined Loss: 0.6 × Tversky + 0.4 × Focal
+    ↓
+AdamW + LinearLR Warmup (3 ep) → CosineAnnealingLR
+    ↓
+Binary Mask: Pet (1) vs Background (0)
+```
 
 ---
 
 ## Dataset
 
-This project uses the **Oxford-IIIT Pet Dataset**.
+This project uses the [Oxford-IIIT Pet Dataset](https://www.robots.ox.ac.uk/~vgg/data/pets/).
 
 ### Dataset Description
 
-- Cat and dog breed images
-- Breed-level labels embedded in image filenames
-- Segmentation annotations available as trimaps
-- Suitable for both classification and segmentation tasks
+- 37 pet breeds (25 dog breeds, 12 cat breeds)
+- ~200 images per class
+- Per-pixel trimap annotations for segmentation (pet / background / uncertain)
+- Images vary significantly in pose, scale, and lighting
 
-### Dataset Structure
+### Trimap Annotation Mapping
 
-- `images/` — pet images
-- `annotations/trimaps/` — segmentation masks
+| Trimap Value | Meaning       | Mapped To |
+|:---:|:---:|:---:|
+| 1 | Pet foreground | 1 (pet) |
+| 2 | Background | 0 (background) |
+| 3 | Uncertain boundary | 0 (background) |
 
-### Segmentation Mask Logic
+### Citation
 
-The trimap masks are converted into binary masks where:
-
-- `1` = pet region
-- `0` = background or uncertain region
-
-This allows the segmentation model to learn a clean binary foreground extraction task.
+O. M. Parkhi, A. Vedaldi, A. Zisserman, C. V. Jawahar, *Cats and Dogs*, IEEE Conference on Computer Vision and Pattern Recognition, 2012.
 
 ---
 
 ## Machine Learning Methodology
 
-### Data Preparation
+### Classification
 
-The pipeline extracts the dataset from nested archives and builds the training input directly from the file structure. For classification, labels are derived from filenames by removing the trailing numerical suffix.
+**Data Preparation**
 
-For segmentation, each image is paired with its corresponding trimap annotation, and the mask is converted to binary format.
+Class labels are extracted from image filenames by stripping the trailing index (e.g., `Abyssinian_1.jpg` → `Abyssinian`). An 80/20 train/val split is applied with stratified-style label coverage.
 
-### Classification Split Strategy
+**Augmentation (Training)**
 
-The classification dataset is split randomly into:
+- Resize to 300×300 then RandomResizedCrop to 256×256
+- RandomHorizontalFlip
+- RandomRotation (±25°)
+- ColorJitter (brightness, contrast, saturation)
+- RandomGrayscale (p=0.1)
+- ImageNet normalization
 
-- **Training set:** 80%
-- **Validation set:** 20%
+**Model**
 
-This split is implemented using PyTorch `random_split`.
+EfficientNet-B0 with pretrained ImageNet weights. The backbone is frozen in Phase 1 and the custom head is trained. In Phase 2, all parameters are unfrozen and fine-tuned end-to-end at a lower learning rate.
 
-### Segmentation Split Strategy
+**Custom Classification Head**
 
-For segmentation, image files are split using `train_test_split` with:
+```python
+nn.Sequential(
+    nn.BatchNorm1d(num_features),
+    nn.Dropout(0.5),
+    nn.Linear(num_features, 37)
+)
+```
 
-- **Training set:** 80%
-- **Validation set:** 20%
-- `random_state=42` for reproducibility
+**Loss & Optimizer**
 
-### Data Augmentation
-
-#### Classification Augmentation
-The classification pipeline uses:
-
-- Resize
-- Random resized crop
-- Horizontal flip
-- Rotation
-- Color jitter
-- Random grayscale
-- Normalization
-
-#### Segmentation Augmentation
-The segmentation pipeline uses:
-
-- Resize
-- Horizontal flip
-- Affine transformation
-- Color jitter
-- Noise or blur
-- Grid distortion
-- Normalization
-
-These augmentations improve generalization and reduce overfitting.
+- CrossEntropyLoss with `label_smoothing=0.1`
+- AdamW with weight decay `1e-4`
+- CosineAnnealingLR (`T_max=10`)
+- Mixed precision with `torch.amp`
 
 ---
 
-## Model Architecture
+### Segmentation
 
-### Classification Model
+**Data Preparation**
 
-The classification component uses **EfficientNet-B0** pretrained on ImageNet.
+All images with corresponding `.png` trimap annotations are used. An 80/20 random split is applied across the full dataset.
 
-#### Architecture Components
+**Augmentation (Training)**
 
-- Input image preprocessing
-- EfficientNet-B0 backbone
-- Batch normalization
-- Dropout regularization
-- Fully connected output layer for breed classification
+- Resize to 256×256
+- HorizontalFlip (p=0.5)
+- Affine transform (scale, translate, rotate, shear)
+- ColorJitter
+- GaussNoise or GaussianBlur (p=0.2)
+- GridDistortion (p=0.2) for edge accuracy
+- ImageNet normalization
 
-#### Why This Design Works
+**Model**
 
-- EfficientNet-B0 provides strong feature extraction with efficient parameter usage
-- Freezing the backbone first allows stable transfer learning
-- Fine-tuning later adapts the model to pet breed-specific patterns
-- Label smoothing improves training robustness
+UNet++ with EfficientNet-B2 encoder and SCSE (Squeeze-and-Channel Squeeze-and-Excitation) decoder attention via `segmentation_models_pytorch`.
 
-### Segmentation Model
+**Loss Function**
 
-The segmentation component uses **UNet++** with an **EfficientNet-B2** encoder.
+```python
+loss = 0.6 × TverskyLoss(alpha=0.3, beta=0.7) + 0.4 × FocalLoss(gamma=2.0)
+```
 
-#### Architecture Components
+Tversky with `beta=0.7` penalizes false negatives more heavily, improving boundary recall on thin pet edges.
 
-- EfficientNet-B2 encoder pretrained on ImageNet
-- UNet++ decoder with nested skip connections
-- SCSE attention in decoder blocks
-- Binary output layer for pet mask prediction
+**Optimizer & Scheduler**
 
-#### Why This Design Works
-
-- UNet++ improves feature fusion through dense skip connections
-- EfficientNet-B2 provides a strong encoder while remaining lightweight
-- SCSE attention improves feature refinement
-- The architecture is well suited for fine pet boundary segmentation
-
----
-
-## Training Strategy
-
-### Phase 1: Classification Training
-
-- EfficientNet-B0 backbone is frozen
-- Only the classifier head is trained initially
-- Optimizer: AdamW
-- Learning rate: `2e-4`
-- Loss: CrossEntropyLoss with label smoothing
-- Scheduler: CosineAnnealingLR
-- Best model saved as `best_model.pth`
-
-### Phase 2: Classification Fine-Tuning
-
-- Entire model is unfrozen
-- Learning rate is reduced to `5e-5`
-- Training continues with early stopping
-- Best updated checkpoint is saved again if validation improves
-
-### Segmentation Training
-
-- UNet++ is trained on binary masks
-- Loss is a weighted combination of:
-  - Tversky Loss
-  - Focal Loss
-- Optimizer: AdamW
-- Learning rate: `3e-4`
-- Scheduler: Linear warmup followed by cosine decay
-- Gradient clipping is used for stability
-- Best model saved as `best_seg_model.pth`
+- AdamW (`lr=3e-4`, `weight_decay=1e-4`)
+- 3-epoch linear warmup followed by cosine annealing to `eta_min=1e-6`
+- Gradient clipping (`max_norm=1.0`) for training stability
 
 ---
 
 ## Training Configuration
 
-| Parameter | Classification | Segmentation |
-| --- | --- | --- |
-| Input Image Size | 256 × 256 / 300 × 300 | 256 × 256 |
-| Batch Size | 32 | 16 |
-| Backbone / Encoder | EfficientNet-B0 | EfficientNet-B2 |
+### Classification
+
+| Parameter | Phase 1 | Phase 2 |
+|---|---|---|
+| Backbone | Frozen | Unfrozen |
+| Learning Rate | 2e-4 | 5e-5 |
 | Optimizer | AdamW | AdamW |
-| Initial Learning Rate | 2e-4 | 3e-4 |
-| Fine-Tuning Learning Rate | 5e-5 | - |
-| Loss Function | CrossEntropyLoss | Tversky + Focal Loss |
-| Scheduler | CosineAnnealingLR | Warmup + Cosine Annealing |
-| Precision | Mixed Precision | Mixed Precision |
-| Checkpoint File | `best_model.pth` | `best_seg_model.pth` |
+| Scheduler | CosineAnnealingLR | CosineAnnealingLR |
+| Batch Size | 32 | 32 |
+| Max Epochs | 10 | 10 |
+| Early Stopping Patience | 3 | 2 |
+| Loss | CrossEntropy (ls=0.1) | CrossEntropy (ls=0.1) |
+
+### Segmentation
+
+| Parameter | Value |
+|---|---|
+| Input Size | 256 × 256 |
+| Batch Size | 16 |
+| Learning Rate | 3e-4 |
+| Optimizer | AdamW |
+| Scheduler | LinearWarmup (3 ep) + CosineAnnealing |
+| Max Epochs | 15 |
+| Early Stopping Patience | 4 |
+| Loss | 0.6 × Tversky + 0.4 × Focal |
+| Gradient Clip | 1.0 |
 
 ---
 
 ## Evaluation
 
-The project includes detailed evaluation for both tasks.
+### Classification Metrics
 
-### Classification Evaluation
+- Accuracy (top-1)
+- Weighted Precision, Recall, F1-score
+- Per-class accuracy (sorted worst → best)
+- Full classification report
+- Confusion matrix (18×18 visualization)
 
-- Accuracy
-- Precision
-- Recall
-- F1-score
-- Classification report
-- Confusion matrix
-- Per-class accuracy analysis
+### Segmentation Metrics
 
-### Segmentation Evaluation
-
-- IoU
-- Dice score
-- Accuracy
-- Precision
-- Recall
-- Validation loss tracking
-- Visual mask prediction analysis
-
-### Visual Output
-
-The repository includes a sample result image:
-
-![Results](Results.png)
-
-This file provides a visual snapshot of the final project output.
+- IoU (Intersection over Union)
+- Dice Score (F1)
+- Pixel Accuracy
+- Precision and Recall
+- All metrics computed with `smp.metrics` using micro-reduction
 
 ---
 
-## Inference Workflow
+## Gradio Inference App
 
-The final inference pipeline performs the following:
+The project includes a Gradio interface combining both models for live inference:
 
-1. Loads the trained classification model
-2. Loads the trained segmentation model
-3. Accepts a pet image as input
-4. Predicts the top breed classes
-5. Generates a segmentation mask
-6. Creates an overlay visualization
-7. Produces a confidence heatmap
-8. Displays everything in a Gradio interface
+**Inputs:** A single pet image (cat or dog)
 
-### Inference Outputs
+**Outputs:**
+- Top-5 breed predictions with confidence scores (`gr.Label`)
+- Segmentation overlay (green highlight on pet, dimmed background)
+- Confidence heatmap (RdYlGn colormap of sigmoid probabilities)
 
-- Top-5 breed predictions
-- Segmentation overlay
-- Heatmap visualization
+```python
+demo.launch(debug=True)
+```
 
 ---
 
@@ -290,3 +247,94 @@ The final inference pipeline performs the following:
 ```bash
 git clone https://github.com/sushantkothari/Cat-and-Dog-Breed-Classification-and-Segmentation-Using-EfficientNet-and-UNetPlusPlus.git
 cd Cat-and-Dog-Breed-Classification-and-Segmentation-Using-EfficientNet-and-UNetPlusPlus
+```
+
+### Install Dependencies
+
+```bash
+pip install torch torchvision segmentation-models-pytorch albumentations \
+            scikit-learn matplotlib gradio tqdm
+```
+
+---
+
+## Usage
+
+1. Open `Pet_Breed_Classification_and_Segmentation_System.ipynb` in Google Colab.
+2. Mount Google Drive and place `oxford-iiit-pet.zip` in your Drive.
+3. Run cells in order:
+   - Environment check and dataset extraction
+   - Classification: dataset, model, training, evaluation
+   - Segmentation: dataset, model, training, evaluation
+   - Gradio app launch
+4. Upload any pet image in the Gradio interface to get breed predictions and segmentation output.
+
+**Pretrained Weights**
+
+- `best_model.pth` — Best classification checkpoint (included in repo)
+- `best_seg_model.pth` — Best segmentation checkpoint (generated during training)
+
+---
+
+## Repository Structure
+
+```
+├── Pet_Breed_Classification_and_Segmentation_System.ipynb  # Main notebook
+├── best_model.pth                                           # Classification weights
+├── test_image.jpeg                                          # Sample test image
+├── Results.png                                              # Results visualization
+├── README.md
+└── LICENSE
+```
+
+---
+
+## Technology Stack
+
+- Python
+- PyTorch
+- torchvision
+- segmentation-models-pytorch
+- Albumentations
+- scikit-learn
+- Matplotlib
+- Gradio
+- Google Colab
+
+---
+
+## Engineering Principles
+
+- Mixed precision training (AMP) for GPU efficiency
+- Gradient clipping for stable segmentation training
+- Label smoothing for better-calibrated classification
+- Tversky + Focal loss combination for boundary-sensitive segmentation
+- SCSE decoder attention for refined spatial feature recalibration
+- LR warmup to prevent early divergence in segmentation training
+- Best-model checkpointing with early stopping for both tasks
+- Modular notebook structure for easy experimentation
+
+---
+
+## Potential Extensions
+
+- Multi-label classification (breed + species simultaneously)
+- Instance segmentation with Mask R-CNN
+- EfficientNet-B4/B7 for higher classification accuracy
+- TensorRT or ONNX export for deployment
+- Flask/FastAPI REST API wrapping the Gradio inference function
+- Grad-CAM visualizations for classification explainability
+- Mobile deployment via TorchScript or TFLite conversion
+
+---
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+## Author
+
+**Sushant Kothari**  
+[GitHub](https://github.com/sushantkothari)
