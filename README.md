@@ -263,7 +263,7 @@ pip install torch torchvision segmentation-models-pytorch albumentations \
 1. Open `Pet_Breed_Classification_and_Segmentation_System.ipynb` in Google Colab.
 2. Mount Google Drive and place `oxford-iiit-pet.zip` in your Drive.
 3. Run cells in order:
-   - Environment check and dataset extraction
+   - Environment Verification and Dataset Extraction
    - Classification: dataset, model, training, evaluation
    - Segmentation: dataset, model, training, evaluation
    - Gradio app launch
